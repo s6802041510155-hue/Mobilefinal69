@@ -63,7 +63,15 @@ export function useTiltControl(enabled: boolean, settings: Settings) {
     };
   }, [enabled, settings.calibration]);
 
-  const calibrate = useCallback(() => acceleration.current.x, []);
+  const calibrate = useCallback(() => {
+    // Discard the filter's previous prediction when the player chooses a new
+    // neutral hold. The next samples are then relative to this exact position.
+    rawTilt.current = 0;
+    tilt.current = 0;
+    gyro.current = { x: 0, y: 0, z: 0, timestamp: Date.now() };
+    lastSample.current = Date.now();
+    return acceleration.current.x;
+  }, []);
   const getTilt = useCallback(() => tilt.current, []);
   const consumeDodge = useCallback(() => {
     const direction = dodgeDirection.current;

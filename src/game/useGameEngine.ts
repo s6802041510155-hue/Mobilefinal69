@@ -40,7 +40,7 @@ export function useGameEngine(options: EngineOptions) {
     items.current = { ...items.current, [item]: items.current[item] - 1 }; setRemainingItems(items.current); modelDirty.current = true; callback.current.onConsume(item); callback.current.onEvent('collect'); return true;
   }, []);
   const giveUp = useCallback(() => { if (!ended.current || !deathReason.current) return; callback.current.onGameOver(result(deathReason.current)); }, [result]);
-  const revive = useCallback(() => { if (!ended.current || !deathReason.current || revives.current >= 2) return false; const state = model.current; const rocketY = height - 82; state.hp = Math.min(state.maxHp, 2); state.fuel = state.maxFuel * 0.5; state.shieldActive = true; state.invulnerableLeft = 3; state.entities = state.entities.filter((entity) => entity.y < rocketY - 190); revives.current += 1; ended.current = false; deathReason.current = null; lastFrame.current = 0; modelDirty.current = true; publish(); return true; }, [height, publish]);
+  const revive = useCallback(() => { if (!ended.current || !deathReason.current || revives.current >= 2) return false; const state = model.current; const rocketY = height - 82; state.hp = Math.min(state.maxHp, 2); state.fuel = state.maxFuel * 0.5; state.rocketX = 0.5; state.rocketVelocity = 0; state.shieldActive = true; state.invulnerableLeft = 3; state.entities = state.entities.filter((entity) => entity.y < rocketY - 190); revives.current += 1; ended.current = false; deathReason.current = null; lastFrame.current = 0; modelDirty.current = true; publish(); return true; }, [height, publish]);
 
   useEffect(() => { reset(); }, [modifiers.maxFuel, modifiers.maxHp]);
   useEffect(() => {
@@ -68,13 +68,26 @@ export function useGameEngine(options: EngineOptions) {
       if (!lastFrame.current) lastFrame.current = timestamp; const dt = clamp((timestamp - lastFrame.current) / 1000, 0, 0.05); lastFrame.current = timestamp;
       if (!paused.current && !ended.current) {
         const state = model.current; const difficulty = difficultyFor(state.distance); const stage = stageFor(stageId); state.elapsed += dt; state.comboLeft = Math.max(0, state.comboLeft - dt); if (state.comboLeft === 0) state.combo = 0;
-        const sensitivity = settings.sensitivity === 'high' ? 1.45 : settings.sensitivity === 'low' ? 0.7 : 1; const sensed = settings.controlMode === 'tilt' ? getTilt() : 0; const touchDelta = touchTarget.current === null ? 0 : (touchTarget.current - state.rocketX) * 2.6;
-        const normalized = settings.controlMode === 'touch' ? clamp(touchDelta, -1, 1) : clamp((sensed * (settings.invertTilt ? -1 : 1)) / 0.45, -1, 1); const intent = normalized * 720 * sensitivity * modifiers.agilityMultiplier;
-        state.rocketVelocity += (intent - state.rocketVelocity) * Math.min(1, dt * 7); if (Math.abs(normalized) < 0.055) state.rocketVelocity *= Math.max(0, 1 - dt * 4.5);
+        const sensitivity = settings.sensitivity === 'high' ? 1.12 : settings.sensitivity === 'low' ? 0.84 : 1;
+        const sensed = settings.controlMode === 'tilt' ? getTilt() : 0;
+        // Tilt is mapped to a position relative to the calibrated neutral hold,
+        // not an accumulated speed. Returning the phone to neutral therefore
+        // makes the target the arena centre rather than leaving the ship drifting.
+        const rawTilt = clamp((sensed * (settings.invertTilt ? -1 : 1)) / 0.42, -1, 1);
+        const normalized = Math.abs(rawTilt) < 0.07 ? 0 : rawTilt;
+        const targetX = settings.controlMode === 'touch'
+          ? touchTarget.current ?? state.rocketX
+          : 0.5 + normalized * 0.41 * sensitivity;
+        const targetVelocity = (clamp(targetX, 0.075, 0.925) - state.rocketX) * width * 8.5 * modifiers.agilityMultiplier;
+        const response = Math.min(1, dt * 9.5 * modifiers.agilityMultiplier);
+        state.rocketVelocity += (targetVelocity - state.rocketVelocity) * response;
+        if (Math.abs(targetX - state.rocketX) < 0.0025 && Math.abs(state.rocketVelocity) < 8) state.rocketVelocity = 0;
         if (settings.gyroDodge && state.dodgeCooldown <= 0) { const dodge = consumeDodge(); if (dodge) { state.rocketX = clamp(state.rocketX + dodge * 0.19, 0.075, 0.925); state.rocketVelocity = dodge * 520; state.invulnerableLeft = Math.max(state.invulnerableLeft, 0.32); state.dodgeCooldown = 8; callback.current.onEvent('collect'); } }
         const stormPush = state.stormLeft > 0 ? Math.sin(state.elapsed * 6) * 85 : 0; state.rocketX = clamp(state.rocketX + (state.rocketVelocity + stormPush) * dt / width, 0.075, 0.925);
         const boostFactor = state.boostLeft > 0 ? 1.5 : 1; const boosting = state.boostLeft > 0; state.boostLeft = Math.max(0, state.boostLeft - dt); state.magnetLeft = Math.max(0, state.magnetLeft - dt); state.invulnerableLeft = Math.max(0, state.invulnerableLeft - dt); state.dodgeCooldown = Math.max(0, state.dodgeCooldown - dt);
-        const beforeDistance = state.distance; state.distance += 22 * difficulty.speed * boostFactor * dt; state.score += (Math.floor(state.distance / 10) - Math.floor(beforeDistance / 10)) * 10; state.fuel = Math.max(0, state.fuel - dt * (1 + (boosting ? 3 * modifiers.boostFuelMultiplier : 0)));
+        const beforeDistance = state.distance; state.distance += 22 * difficulty.speed * boostFactor * dt; state.score += (Math.floor(state.distance / 10) - Math.floor(beforeDistance / 10)) * 10;
+        const baseFuelDrain = mode === 'adventure' ? 0.55 : 1;
+        state.fuel = Math.max(0, state.fuel - dt * (baseFuelDrain + (boosting ? 3 * modifiers.boostFuelMultiplier : 0)));
         if (stageId === 'stage-3' && !events.current.showerStarted && state.distance >= 420) { events.current.showerStarted = true; state.showerLeft = 9; callback.current.onEvent('warning'); }
         if (stage?.requiresStorm && !events.current.stormStarted && state.distance >= 620) { events.current.stormStarted = true; state.stormLeft = 14; callback.current.onEvent('warning'); }
         if (stage?.requiresBoss && !events.current.bossStarted && state.distance >= 1700) { events.current.bossStarted = true; state.bossLeft = 22; callback.current.onEvent('warning'); }

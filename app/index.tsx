@@ -19,6 +19,7 @@ export default function RocketRushApp() {
   const [screen, setScreen] = useState<ScreenName>('splash');
   const [session, setSession] = useState<Session | null>(null);
   const [lastResult, setLastResult] = useState<GameRecord | null>(null);
+  const [garageBack, setGarageBack] = useState<ScreenName>('main');
   const settings = profile?.settings;
   const { getTilt, consumeDodge, calibrate, sensorAvailable } = useTiltControl(Boolean(settings), settings ?? {
     soundEffects: true, backgroundMusic: true, vibration: true, sensitivity: 'medium', invertTilt: false, controlMode: 'tilt', calibration: 0, gyroDodge: true, reducedEffects: false,
@@ -41,6 +42,7 @@ export default function RocketRushApp() {
 
   const navigate = (next: ScreenName) => {
     if (settings) feedback.tap(settings);
+    if (next === 'missions' && profile) void GameStorage.refreshWeekly(profile).then(setProfile);
     setScreen(next);
   };
   const updateSettings = async (next: Settings) => {
@@ -54,14 +56,18 @@ export default function RocketRushApp() {
     setSession({ id: Date.now(), mode, missionId, stageId, fallbackTouch: profile.settings.controlMode === 'tilt' && !sensorAvailable });
     setScreen('game');
   };
+  const openGarage = (back: ScreenName) => { setGarageBack(back); navigate('garage'); };
   const finishGame = async (result: GameResult) => {
     if (!profile) return;
-    const record = GameStorage.createRecord(result);
+    const stage = result.stageCompleted ? stageFor(result.stageId) : undefined;
+    const firstClear = Boolean(stage && !profile.stages.find((item) => item.stageId === stage.id)?.rewardClaimed);
+    const completedResult = stage ? { ...result, stageFirstClearReward: firstClear ? stage.reward : 0 } : result;
+    const record = GameStorage.createRecord(completedResult);
     let saved = await GameStorage.recordGame(profile, record);
     if (result.stageCompleted && result.stageId) saved = await GameStorage.completeStage(saved, result.stageId, result.remainingHp, result.maxHp, result.revivesUsed);
     setProfile(saved);
     setLastResult(record);
-    setScreen('gameover');
+    setScreen(result.stageCompleted ? 'stageclear' : 'gameover');
   };
   const activeSettings = useMemo(() => session?.fallbackTouch && settings ? { ...settings, controlMode: 'touch' as const } : settings, [session?.fallbackTouch, settings]);
   const modifiers = useMemo(() => profile ? getModifiers(profile.equippedRocket, profile.upgrades) : null, [profile]);
@@ -76,20 +82,21 @@ export default function RocketRushApp() {
       onSpendDiamonds={spendDiamonds} onConsume={consume}
       onFeedback={(event) => event === 'collect' ? feedback.collect(settings) : event === 'hit' ? feedback.hit(settings) : feedback.warning(settings)} />
   );
-  if (screen === 'main') return <MainMenu profile={profile} onNavigate={navigate} />;
+  if (screen === 'main') return <MainMenu profile={profile} onNavigate={navigate} onGarage={() => openGarage('main')} />;
   if (screen === 'mode') return <ModeScreen onBack={() => navigate('main')} onStart={startGame} onStages={() => navigate('stages')} />;
   if (screen === 'tutorial') return <TutorialScreen onBack={() => navigate('main')} onStart={() => startGame('endless')} />;
   if (screen === 'missions') return <MissionsScreen profile={profile} onBack={() => navigate('main')} onStart={(id) => startGame('mission', id)} onClaim={async (id, reward) => setProfile(await GameStorage.claimMission(profile, id, reward))} />;
   if (screen === 'leaderboard') return <LeaderboardScreen profile={profile} onBack={() => navigate('main')} />;
-  if (screen === 'garage') return <GarageScreen profile={profile} onBack={() => navigate('main')} onRefresh={setProfile} onOpen={navigate} />;
+  if (screen === 'garage') return <GarageScreen profile={profile} onBack={() => navigate(garageBack)} onRefresh={setProfile} onOpen={navigate} />;
   if (screen === 'upgrades') return <UpgradesScreen profile={profile} onBack={() => navigate('garage')} onRefresh={setProfile} />;
   if (screen === 'shop') return <ShopScreen profile={profile} onBack={() => navigate('garage')} onRefresh={setProfile} />;
   if (screen === 'inventory') return <InventoryScreen profile={profile} onBack={() => navigate('garage')} onRefresh={setProfile} />;
   if (screen === 'stages') return <StagesScreen profile={profile} onBack={() => navigate('mode')} onStart={(id) => startGame('adventure', undefined, id)} />;
   if (screen === 'daily') return <DailyScreen profile={profile} onBack={() => navigate('main')} onRefresh={setProfile} />;
   if (screen === 'settings') return <SettingsScreen settings={settings} sensorAvailable={sensorAvailable} onBack={() => navigate('main')} onChange={updateSettings} onCalibrate={() => updateSettings({ ...settings, calibration: calibrate() })} />;
+  if (screen === 'stageclear' && lastResult?.stageCompleted) return <StageClearScreen profile={profile} result={lastResult} onNext={(id) => startGame('adventure', undefined, id)} onReplay={() => startGame('adventure', undefined, lastResult.stageId)} onGarage={() => openGarage('stageclear')} onStages={() => navigate('stages')} />;
   if (screen === 'gameover' && lastResult) return <GameOverScreen result={lastResult} records={profile.records} onPlayAgain={() => startGame(lastResult.mode, lastResult.missionId, lastResult.stageId)} onMenu={() => navigate('main')} />;
-  return <MainMenu profile={profile} onNavigate={navigate} />;
+  return <MainMenu profile={profile} onNavigate={navigate} onGarage={() => openGarage('main')} />;
 }
 
 function SplashScreen() {
@@ -104,15 +111,15 @@ function SplashScreen() {
   return <SpaceBackdrop><SafeAreaView style={styles.splash}><Animated.Text style={[styles.splashRocket, { opacity: glow }]}>🚀</Animated.Text><Text style={styles.splashTitle}>ROCKET{`\n`}RUSH</Text><Text style={styles.splashSubtitle}>ASTEROID ESCAPE</Text><ActivityIndicator color={COLORS.cyan} size="large" /><Text style={styles.loading}>LOADING STELLAR SYSTEMS...</Text></SafeAreaView></SpaceBackdrop>;
 }
 
-function MainMenu({ profile, onNavigate }: { profile: StoredProfile; onNavigate: (screen: ScreenName) => void }) {
+function MainMenu({ profile, onNavigate, onGarage }: { profile: StoredProfile; onNavigate: (screen: ScreenName) => void; onGarage: () => void }) {
   return <SpaceBackdrop><SafeAreaView style={styles.safe}><View style={styles.mainContent}>
     <View style={styles.logoWrap}><Text style={styles.logoTop}>ROCKET</Text><Text style={styles.logoBottom}>RUSH</Text><Text style={styles.tagline}>ASTEROID ESCAPE</Text></View>
     <View style={styles.hero}><Text style={styles.planet}>🪐</Text><Text style={styles.heroRocket}>🚀</Text><Text style={styles.spark}>✦</Text></View>
     <View style={styles.menuButtons}>
       <NeonButton label="PLAY" icon="▶" variant="primary" onPress={() => onNavigate('mode')} style={styles.playButton} />
-      <NeonButton label="ROCKET GARAGE" icon="🚀" onPress={() => onNavigate('garage')} />
+      <NeonButton label="ROCKET GARAGE" icon="🚀" onPress={onGarage} />
       <NeonButton label="DAILY CHALLENGES" icon="☀" onPress={() => onNavigate('daily')} />
-      <NeonButton label="MISSIONS" icon="◎" onPress={() => onNavigate('missions')} />
+      <NeonButton label="WEEKLY MISSIONS" icon="◎" onPress={() => onNavigate('missions')} />
       <NeonButton label="LEADERBOARD" icon="♛" onPress={() => onNavigate('leaderboard')} />
       <NeonButton label="SETTINGS" icon="⚙" onPress={() => onNavigate('settings')} />
       <NeonButton label="HOW TO PLAY" icon="?" onPress={() => onNavigate('tutorial')} />
@@ -130,7 +137,7 @@ function ModeScreen({ onBack, onStart, onStages }: { onBack: () => void; onStart
     <Text style={styles.screenIntro}>CHOOSE YOUR FLIGHT</Text>
     <Pressable onPress={() => onStart('endless')}><NeonPanel style={[styles.modeCard, styles.endlessCard]}><Text style={styles.modeIcon}>∞</Text><View><Text style={styles.modeTitle}>ENDLESS SURVIVAL</Text><Text style={styles.modeDescription}>Go as far as you can. Every meter makes space more dangerous.</Text></View></NeonPanel></Pressable>
     <Pressable onPress={onStages}><NeonPanel style={styles.modeCard}><Text style={styles.modeIcon}>⚑</Text><View><Text style={styles.modeTitle}>ADVENTURE MODE</Text><Text style={styles.modeDescription}>Clear six stages, earn first-clear rewards, and unlock Nebula Guardian.</Text></View></NeonPanel></Pressable>
-    <Text style={styles.helpNote}>MISSIONS remain available from the main menu for long-term goals.</Text>
+    <Text style={styles.helpNote}>WEEKLY MISSIONS reset every Monday. Daily Challenges reset each day.</Text>
   </ScreenShell>;
 }
 
@@ -148,7 +155,7 @@ function TutorialScreen({ onBack, onStart }: { onBack: () => void; onStart: () =
 function Legend({ icon, text }: { icon: string; text: string }) { return <View style={styles.legend}><Text style={styles.legendIcon}>{icon}</Text><Text style={styles.legendText}>{text}</Text></View>; }
 
 function MissionsScreen({ profile, onBack, onStart, onClaim }: { profile: StoredProfile; onBack: () => void; onStart: (id: string) => void; onClaim: (id: string, reward: number) => void }) {
-  return <ScreenShell title="MISSIONS" onBack={onBack}><Text style={styles.screenIntro}>COMPLETE CHALLENGES · EARN COINS</Text>{MISSION_DEFINITIONS.map((mission) => {
+  return <ScreenShell title="WEEKLY MISSIONS" onBack={onBack}><Text style={styles.screenIntro}>WEEK OF {profile.missionsWeek} · RESETS MONDAY</Text>{MISSION_DEFINITIONS.map((mission) => {
     const value = GameStorage.missionValue(profile, mission.id); const claimed = GameStorage.isClaimed(profile, mission.id); const complete = value >= mission.target; const progress = Math.min(100, value / mission.target * 100);
     return <NeonPanel key={mission.id} style={styles.missionCard}><View style={styles.missionTop}><Text style={styles.missionIcon}>{mission.icon}</Text><View style={styles.missionCopy}><Text style={styles.missionTitle}>{mission.title}</Text><Text style={styles.missionDescription}>{mission.description}</Text></View><Text style={styles.reward}>🟡 {mission.reward}</Text></View><View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${progress}%` }]} /></View><View style={styles.missionFooter}><Text style={styles.progressText}>{Math.min(Math.floor(value), mission.target)} / {mission.target}</Text>{complete && !claimed ? <NeonButton small label="CLAIM" variant="gold" onPress={() => onClaim(mission.id, mission.reward)} /> : claimed ? <Text style={styles.claimed}>✓ CLAIMED</Text> : <NeonButton small label="PLAY" variant="primary" onPress={() => onStart(mission.id)} />}</View></NeonPanel>;
   })}</ScreenShell>;
@@ -169,6 +176,18 @@ function ShopScreen({ profile, onBack, onRefresh }: { profile: StoredProfile; on
 function InventoryScreen({ profile, onBack, onRefresh }: { profile: StoredProfile; onBack: () => void; onRefresh: (profile: StoredProfile) => void }) { const toggle = async (id: ConsumableId) => { const active = profile.loadout.includes(id); const next = active ? profile.loadout.filter((item) => item !== id) : [...profile.loadout, id]; if (!active && profile.loadout.length >= 3) { Alert.alert('Loadout full', 'Choose up to 3 different items per flight.'); return; } const saved = await GameStorage.setLoadout(profile, next); onRefresh(saved); }; return <ScreenShell title="INVENTORY" onBack={onBack}><Text style={styles.screenIntro}>EQUIP UP TO 3 ITEMS BEFORE A FLIGHT</Text>{(Object.keys(CONSUMABLE_DEFINITIONS) as ConsumableId[]).map((id) => <NeonPanel key={id} style={styles.upgradeCard}><Text style={styles.missionIcon}>{CONSUMABLE_DEFINITIONS[id].icon}</Text><View style={styles.missionCopy}><Text style={styles.missionTitle}>{CONSUMABLE_DEFINITIONS[id].name}</Text><Text style={styles.ability}>OWNED: {profile.inventory[id]}</Text></View><NeonButton small disabled={profile.inventory[id] === 0} label={profile.loadout.includes(id) ? 'EQUIPPED' : 'EQUIP'} variant={profile.loadout.includes(id) ? 'primary' : 'secondary'} onPress={() => toggle(id)} /></NeonPanel>)}</ScreenShell>; }
 
 function StagesScreen({ profile, onBack, onStart }: { profile: StoredProfile; onBack: () => void; onStart: (id: string) => void }) { return <ScreenShell title="ADVENTURE STAGES" onBack={onBack}>{STAGES.map((stage) => { const progress = profile.stages.find((item) => item.stageId === stage.id); const locked = !progress?.unlocked; return <NeonPanel key={stage.id} style={styles.stageCard}><Text style={styles.stageNumber}>{locked ? '🔒' : `0${stage.number}`}</Text><View style={styles.missionCopy}><Text style={styles.missionTitle}>{stage.name}</Text><Text style={styles.missionDescription}>{stage.objective}</Text><Text style={styles.ability}>REWARD: 🟡 {stage.reward} · {'★'.repeat(progress?.bestStars ?? 0)}{'☆'.repeat(3 - (progress?.bestStars ?? 0))}</Text></View><NeonButton small disabled={locked} label={locked ? 'LOCKED' : progress?.cleared ? 'REPLAY' : 'PLAY'} variant="primary" onPress={() => onStart(stage.id)} /></NeonPanel>; })}</ScreenShell>; }
+
+function StageClearScreen({ profile, result, onNext, onReplay, onGarage, onStages }: { profile: StoredProfile; result: GameRecord; onNext: (id: string) => void; onReplay: () => void; onGarage: () => void; onStages: () => void }) {
+  const stage = stageFor(result.stageId);
+  const glow = useState(() => new Animated.Value(0.35))[0];
+  useEffect(() => { const animation = Animated.loop(Animated.sequence([Animated.timing(glow, { toValue: 1, duration: 700, useNativeDriver: true }), Animated.timing(glow, { toValue: 0.35, duration: 700, useNativeDriver: true })])); animation.start(); return () => animation.stop(); }, [glow]);
+  if (!stage) return null;
+  const stars = Math.min(result.revivesUsed > 0 ? 2 : 3, result.remainingHp >= result.maxHp ? 3 : result.remainingHp >= 2 ? 2 : 1);
+  const nextStage = STAGES[stage.number];
+  const nextUnlocked = nextStage && profile.stages.find((item) => item.stageId === nextStage.id)?.unlocked;
+  const bestScore = Math.max(...profile.records.filter((record) => record.stageId === stage.id).map((record) => record.score), result.score);
+  return <SpaceBackdrop theme={stage.theme}><SafeAreaView style={styles.stageClearSafe}><Animated.Text style={[styles.stageClearBurst, { opacity: glow }]}>✦ ✧ ✦</Animated.Text><Text style={styles.overTitle}>{stage.number === 6 ? 'ADVENTURE\nCOMPLETE!' : 'STAGE\nCLEAR!'}</Text><Text style={styles.stageClearName}>{stage.name}</Text><Text style={styles.stageStars}>{'★'.repeat(stars)}{'☆'.repeat(3 - stars)}</Text><NeonPanel style={styles.resultPanel}><ResultLine label="FINAL SCORE" value={result.score.toLocaleString()} /><ResultLine label="DISTANCE" value={`${result.distance} m`} /><ResultLine label="FLIGHT COINS" value={`🟡 ${result.coins}`} /><ResultLine label="DIAMONDS FOUND" value={`💎 ${result.crystals}`} /><ResultLine label="BEST STAGE SCORE" value={bestScore.toLocaleString()} />{result.stageFirstClearReward ? <View style={styles.stageReward}><Text style={styles.stageRewardText}>FIRST CLEAR REWARD · 🟡 {result.stageFirstClearReward}</Text></View> : <Text style={styles.replayReward}>FIRST-CLEAR REWARD ALREADY CLAIMED</Text>}{nextStage && nextUnlocked ? <Text style={styles.nextUnlocked}>✓ {nextStage.name} UNLOCKED</Text> : null}</NeonPanel><View style={styles.stageClearActions}>{nextStage && nextUnlocked ? <NeonButton label="NEXT STAGE" icon="▶" variant="primary" onPress={() => onNext(nextStage.id)} /> : null}<NeonButton label="REPLAY STAGE" icon="↻" onPress={onReplay} /><NeonButton label="ROCKET GARAGE" icon="🚀" onPress={onGarage} /><NeonButton label="STAGE SELECT" icon="☰" onPress={onStages} /></View></SafeAreaView></SpaceBackdrop>;
+}
 
 function DailyScreen({ profile, onBack, onRefresh }: { profile: StoredProfile; onBack: () => void; onRefresh: (profile: StoredProfile) => void }) { const daily = profile.daily; return <ScreenShell title="DAILY CHALLENGES" onBack={onBack}><Wallet profile={profile} /><Text style={styles.screenIntro}>RESETS WITH YOUR LOCAL DATE</Text>{daily?.challenges.map((challenge) => { const complete = challenge.value >= challenge.target; return <NeonPanel key={challenge.id} style={styles.missionCard}><View style={styles.missionTop}><Text style={styles.missionIcon}>{challenge.icon}</Text><View style={styles.missionCopy}><Text style={styles.missionTitle}>{challenge.title}</Text><Text style={styles.missionDescription}>{challenge.target} {challenge.metric}</Text></View><Text style={styles.reward}>🟡 {challenge.reward}</Text></View><View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${Math.min(100, challenge.value / challenge.target * 100)}%` }]} /></View><View style={styles.missionFooter}><Text style={styles.progressText}>{Math.min(Math.floor(challenge.value), challenge.target)} / {challenge.target}</Text>{challenge.claimed ? <Text style={styles.claimed}>✓ CLAIMED</Text> : <NeonButton small disabled={!complete} label="CLAIM" variant="gold" onPress={async () => { const saved = await GameStorage.claimDaily(profile, challenge.id); if (saved) onRefresh(saved); }} />}</View></NeonPanel>; })}</ScreenShell>; }
 
@@ -214,6 +233,7 @@ const styles = StyleSheet.create({
   tutorialPanel: { alignItems: 'center', paddingVertical: 28, minHeight: 327 }, tutorialIcon: { fontSize: 76, marginBottom: 8 }, tutorialTitle: { color: COLORS.cyan, fontWeight: '900', fontSize: 24, letterSpacing: 1 }, tutorialBody: { color: '#e4eaff', lineHeight: 21, fontSize: 15, textAlign: 'center', marginTop: 16 }, dots: { flexDirection: 'row', gap: 8, marginVertical: 22 }, dot: { width: 8, height: 8, borderRadius: 6, backgroundColor: '#6b77b9' }, dotActive: { backgroundColor: COLORS.cyan, width: 23 }, rowButtons: { width: '100%', flexDirection: 'row', justifyContent: 'space-between' }, legendPanel: { gap: 8 }, legend: { flexDirection: 'row', gap: 13, alignItems: 'center' }, legendIcon: { fontSize: 24 }, legendText: { color: '#e6edff', fontSize: 13, flexShrink: 1 },
   missionCard: { gap: 13 }, missionTop: { flexDirection: 'row', alignItems: 'center', gap: 10 }, missionIcon: { fontSize: 34 }, missionCopy: { flex: 1 }, missionTitle: { color: '#fff', fontWeight: '900', fontSize: 16 }, missionDescription: { color: '#bcc9fa', fontSize: 12, marginTop: 2 }, reward: { color: COLORS.yellow, fontWeight: '900', fontSize: 12 }, progressTrack: { height: 10, backgroundColor: '#081442', borderRadius: 9, overflow: 'hidden', borderWidth: 1, borderColor: '#3656aa' }, progressFill: { height: '100%', backgroundColor: COLORS.cyan, borderRadius: 9 }, missionFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, progressText: { color: '#d9e4ff', fontSize: 12, fontWeight: '800' }, claimed: { color: '#6fffc8', fontSize: 12, fontWeight: '900' },
   wallet: { color: COLORS.yellow, fontSize: 14, textAlign: 'center', fontWeight: '900', letterSpacing: 1 }, garageLinks: { flexDirection: 'row', gap: 7, justifyContent: 'center', flexWrap: 'wrap' }, garageCard: { flexDirection: 'row', alignItems: 'center', gap: 12 }, garageRocket: { fontSize: 48, textShadowColor: COLORS.cyan, textShadowRadius: 10 }, garageInfo: { flex: 1, gap: 5 }, ability: { color: COLORS.cyan, fontSize: 11, fontWeight: '900', letterSpacing: 0.5 }, locked: { color: '#f098bf', fontSize: 11, fontWeight: '900' }, upgradeCard: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 12 }, stageCard: { flexDirection: 'row', alignItems: 'center', gap: 12 }, stageNumber: { color: COLORS.cyan, fontSize: 26, fontWeight: '900', width: 42, textAlign: 'center' },
+  stageClearSafe: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 20, gap: 10 }, stageClearBurst: { color: '#a9f6ff', fontSize: 37, fontWeight: '900', textShadowColor: COLORS.cyan, textShadowRadius: 22 }, stageClearName: { color: '#cbd8ff', fontSize: 13, fontWeight: '900', letterSpacing: 1.4 }, stageStars: { color: COLORS.yellow, fontSize: 31, letterSpacing: 4, textShadowColor: '#ffbd41', textShadowRadius: 12 }, stageReward: { marginTop: 8, padding: 10, borderRadius: 10, backgroundColor: 'rgba(255, 214, 74, 0.14)' }, stageRewardText: { color: '#ffe27d', fontSize: 12, fontWeight: '900', textAlign: 'center' }, replayReward: { color: '#b6c2eb', fontSize: 10, fontWeight: '800', textAlign: 'center', marginTop: 8 }, nextUnlocked: { color: '#76ffd6', fontSize: 11, fontWeight: '900', textAlign: 'center', marginTop: 7 }, stageClearActions: { width: '100%', maxWidth: 350, gap: 8 },
   leaderPanel: { padding: 9 }, emptyBoard: { alignItems: 'center', paddingVertical: 36, gap: 7 }, emptyIcon: { fontSize: 50 }, emptyTitle: { color: '#fff', fontWeight: '900', fontSize: 18 }, emptyText: { color: '#bac8f5', textAlign: 'center', fontSize: 13 }, leaderRow: { minHeight: 52, paddingHorizontal: 7, flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderColor: 'rgba(111, 137, 220, 0.28)' }, topRow: { backgroundColor: 'rgba(110, 63, 224, 0.18)' }, rank: { width: 44, color: '#f4f7ff', fontWeight: '900', fontSize: 16 }, leaderDetail: { flex: 1 }, leaderName: { color: '#f6f7ff', fontWeight: '800', fontSize: 12 }, leaderDistance: { color: '#afbef5', fontSize: 11, marginTop: 2 }, leaderScore: { color: COLORS.yellow, fontWeight: '900', fontSize: 17 }, localOnly: { color: '#b4c2f4', fontSize: 11, lineHeight: 16, textAlign: 'center' },
   settingsPanel: { gap: 9 }, toggleRow: { height: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: 'rgba(123, 148, 230, 0.2)' }, toggleLabel: { color: '#fff', fontSize: 15, fontWeight: '700' }, settingLabel: { color: COLORS.cyan, fontSize: 11, fontWeight: '900', letterSpacing: 1.2, marginTop: 10 }, choiceRow: { flexDirection: 'row', gap: 8 }, choice: { flex: 1, minHeight: 39, borderRadius: 12, backgroundColor: '#172365', borderWidth: 1, borderColor: '#4162b7', alignItems: 'center', justifyContent: 'center' }, choiceActive: { backgroundColor: '#4132b8', borderColor: COLORS.cyan, shadowColor: COLORS.cyan, shadowOpacity: 0.8, shadowRadius: 7 }, choiceText: { color: '#fff', fontSize: 11, fontWeight: '900' }, sensorStatus: { marginVertical: 6, padding: 10, backgroundColor: 'rgba(0, 212, 255, 0.1)', borderRadius: 12 }, sensorText: { color: '#8df6ff', fontSize: 12, textAlign: 'center', fontWeight: '700' },
   gameOverSafe: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 17 }, overTitle: { color: '#fa9eff', fontSize: 47, lineHeight: 43, fontWeight: '900', fontStyle: 'italic', textAlign: 'center', textShadowColor: COLORS.pink, textShadowRadius: 18 }, newHigh: { color: COLORS.yellow, fontSize: 13, fontWeight: '900', letterSpacing: 1.5 }, resultPanel: { width: '100%', maxWidth: 350, gap: 7, paddingVertical: 20 }, resultLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', paddingHorizontal: 5 }, resultLabel: { color: '#bdc9ff', fontSize: 11, fontWeight: '900', letterSpacing: 1 }, resultValue: { color: '#fff', fontSize: 22, fontWeight: '900' }, endReason: { marginTop: 7, backgroundColor: 'rgba(90, 55, 173, 0.45)', padding: 10, borderRadius: 10 }, endReasonText: { color: '#d3dcff', fontSize: 12, textAlign: 'center' }, gameOverButtons: { width: '100%', maxWidth: 350, gap: 10 },

@@ -65,6 +65,13 @@ const dailyTemplates: Omit<DailyChallenge, 'id' | 'value' | 'claimed'>[] = [
 ];
 
 export function localDateKey(date = new Date()) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`; }
+/** A local, Monday-starting week key that does not depend on UTC conversion. */
+export function localWeekKey(date = new Date()) {
+  const monday = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const daysSinceMonday = (monday.getDay() + 6) % 7;
+  monday.setDate(monday.getDate() - daysSinceMonday);
+  return localDateKey(monday);
+}
 export function dailyChallengesFor(date = localDateKey()) {
   const seed = [...date].reduce((sum, char) => sum * 31 + char.charCodeAt(0), 7) >>> 0;
   return [0, 1, 2].map((offset) => { const template = dailyTemplates[(seed + offset * 3) % dailyTemplates.length]; return { ...template, id: `${date}-${template.metric}-${offset}`, value: 0, claimed: false }; });

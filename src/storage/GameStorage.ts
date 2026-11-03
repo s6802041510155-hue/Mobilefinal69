@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { CONSUMABLE_DEFINITIONS, dailyChallengesFor, DEFAULT_SETTINGS, localDateKey, MISSION_DEFINITIONS, ROCKET_DEFINITIONS, STAGES, UPGRADE_DEFINITIONS } from '@/game/config/game';
+import { CONSUMABLE_DEFINITIONS, dailyChallengesFor, DEFAULT_SETTINGS, localDateKey, localWeekKey, MISSION_DEFINITIONS, ROCKET_DEFINITIONS, STAGES, UPGRADE_DEFINITIONS } from '@/game/config/game';
 import type { ConsumableId, DailyChallenge, GameRecord, Inventory, MissionProgress, RocketId, Settings, StageProgress, StoredProfile, UpgradeId, UpgradeLevels } from '@/types/game';
 
 const KEY = '@rocket-rush/profile-v2';
@@ -8,14 +8,16 @@ const emptyUpgrades = (): UpgradeLevels => ({ hull: 0, fuelTank: 0, thruster: 0,
 const emptyInventory = (): Inventory => ({ repairKit: 0, shieldBattery: 0, emergencyFuel: 0, magnetPulse: 0 });
 const initialStages = (): StageProgress[] => STAGES.map((stage, index) => ({ stageId: stage.id, unlocked: index === 0, cleared: false, bestStars: 0, rewardClaimed: false }));
 
-const initialProfile = (): StoredProfile => ({ schemaVersion: 2, settings: DEFAULT_SETTINGS, records: [], missions: [], totalCoins: 0, totalCrystals: 0, diamonds: 0, totalGames: 0, totalShieldsUsed: 0, totalAsteroidsDodged: 0, longestSurvival: 0, totalDistance: 0, totalRevivesUsed: 0, ownedRockets: ['classic'], equippedRocket: 'classic', upgrades: emptyUpgrades(), inventory: emptyInventory(), loadout: [], stages: initialStages(), daily: { date: localDateKey(), challenges: dailyChallengesFor() } });
+const initialProfile = (): StoredProfile => ({ schemaVersion: 3, settings: DEFAULT_SETTINGS, records: [], missionsWeek: localWeekKey(), missions: [], totalCoins: 0, totalCrystals: 0, diamonds: 0, totalGames: 0, totalShieldsUsed: 0, totalAsteroidsDodged: 0, longestSurvival: 0, totalDistance: 0, totalRevivesUsed: 0, ownedRockets: ['classic'], equippedRocket: 'classic', upgrades: emptyUpgrades(), inventory: emptyInventory(), loadout: [], stages: initialStages(), daily: { date: localDateKey(), challenges: dailyChallengesFor() } });
 const stageState = (stored: StageProgress[] | undefined) => initialStages().map((stage) => ({ ...stage, ...stored?.find((item) => item.stageId === stage.stageId) }));
 const dailyForToday = (daily: StoredProfile['daily']) => daily?.date === localDateKey() ? daily : { date: localDateKey(), challenges: dailyChallengesFor() };
+const weeklyForCurrent = (profile: StoredProfile): StoredProfile => profile.missionsWeek === localWeekKey() ? profile : { ...profile, missionsWeek: localWeekKey(), missions: [] };
 
 function normalize(raw: Partial<StoredProfile>): StoredProfile {
   const base = initialProfile();
   const diamonds = typeof raw.diamonds === 'number' ? raw.diamonds : raw.totalCrystals ?? 0;
-  return { ...base, ...raw, schemaVersion: 2, settings: { ...DEFAULT_SETTINGS, ...raw.settings }, diamonds, upgrades: { ...emptyUpgrades(), ...raw.upgrades }, inventory: { ...emptyInventory(), ...raw.inventory }, ownedRockets: raw.ownedRockets?.length ? raw.ownedRockets : ['classic'], equippedRocket: raw.equippedRocket && (raw.ownedRockets ?? ['classic']).includes(raw.equippedRocket) ? raw.equippedRocket : 'classic', loadout: (raw.loadout ?? []).slice(0, 3), stages: stageState(raw.stages), daily: dailyForToday(raw.daily ?? null) };
+  const missionsWeek = raw.missionsWeek ?? localWeekKey();
+  return { ...base, ...raw, schemaVersion: 3, missionsWeek: localWeekKey(), missions: missionsWeek === localWeekKey() ? raw.missions ?? [] : [], settings: { ...DEFAULT_SETTINGS, ...raw.settings }, diamonds, upgrades: { ...emptyUpgrades(), ...raw.upgrades }, inventory: { ...emptyInventory(), ...raw.inventory }, ownedRockets: raw.ownedRockets?.length ? raw.ownedRockets : ['classic'], equippedRocket: raw.equippedRocket && (raw.ownedRockets ?? ['classic']).includes(raw.equippedRocket) ? raw.equippedRocket : 'classic', loadout: (raw.loadout ?? []).slice(0, 3), stages: stageState(raw.stages), daily: dailyForToday(raw.daily ?? null) };
 }
 
 export const GameStorage = {
@@ -28,15 +30,16 @@ export const GameStorage = {
     } catch { return initialProfile(); }
   },
   async save(profile: StoredProfile) { await AsyncStorage.setItem(KEY, JSON.stringify(profile)); },
+  async refreshWeekly(profile: StoredProfile) { const next = weeklyForCurrent(profile); if (next !== profile) await this.save(next); return next; },
   async updateSettings(profile: StoredProfile, settings: Settings) { const next = { ...profile, settings }; await this.save(next); return next; },
   createRecord(result: Omit<GameRecord, 'id' | 'playedAt'>): GameRecord { return { ...result, id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, playedAt: new Date().toISOString() }; },
-  missionValue(profile: StoredProfile, id: string) { return profile.missions.find((mission) => mission.missionId === id)?.value ?? 0; },
-  isClaimed(profile: StoredProfile, id: string) { return profile.missions.find((mission) => mission.missionId === id)?.claimed ?? false; },
+  missionValue(profile: StoredProfile, id: string) { return profile.missionsWeek === localWeekKey() ? profile.missions.find((mission) => mission.missionId === id)?.value ?? 0 : 0; },
+  isClaimed(profile: StoredProfile, id: string) { return profile.missionsWeek === localWeekKey() && (profile.missions.find((mission) => mission.missionId === id)?.claimed ?? false); },
   async claimMission(profile: StoredProfile, id: string, reward: number) {
-    const existing = profile.missions.find((mission) => mission.missionId === id);
-    if (existing?.claimed) return profile;
-    const missions: MissionProgress[] = existing ? profile.missions.map((mission) => mission.missionId === id ? { ...mission, claimed: true } : mission) : [...profile.missions, { missionId: id, value: 0, claimed: true }];
-    const next = { ...profile, missions, totalCoins: profile.totalCoins + reward }; await this.save(next); return next;
+    const currentProfile = weeklyForCurrent(profile); const existing = currentProfile.missions.find((mission) => mission.missionId === id);
+    if (existing?.claimed) return currentProfile;
+    const missions: MissionProgress[] = existing ? currentProfile.missions.map((mission) => mission.missionId === id ? { ...mission, claimed: true } : mission) : [...currentProfile.missions, { missionId: id, value: 0, claimed: true }];
+    const next = { ...currentProfile, missions, totalCoins: currentProfile.totalCoins + reward }; await this.save(next); return next;
   },
   async purchaseRocket(profile: StoredProfile, id: RocketId) {
     const rocket = ROCKET_DEFINITIONS[id];
@@ -81,12 +84,13 @@ export const GameStorage = {
     const next = { ...profile, totalCoins: profile.totalCoins + challenge.reward, daily: { ...daily, challenges } }; await this.save(next); return next;
   },
   async recordGame(profile: StoredProfile, record: GameRecord) {
+    const currentProfile = weeklyForCurrent(profile);
     const metricValue: Record<string, number> = { distance: record.distance, crystals: record.crystals, shields: record.shieldsUsed, dodged: record.asteroidsDodged, survival: record.survivalTime };
-    const missions = MISSION_DEFINITIONS.map((definition) => { const current = profile.missions.find((mission) => mission.missionId === definition.id); return { missionId: definition.id, value: (current?.value ?? 0) + metricValue[definition.metric], claimed: current?.claimed ?? false }; });
-    const daily = dailyForToday(profile.daily);
+    const missions = MISSION_DEFINITIONS.map((definition) => { const current = currentProfile.missions.find((mission) => mission.missionId === definition.id); return { missionId: definition.id, value: (current?.value ?? 0) + metricValue[definition.metric], claimed: current?.claimed ?? false }; });
+    const daily = dailyForToday(currentProfile.daily);
     const dailyMetrics: Record<string, number> = { distance: record.distance, crystals: record.crystals, dodged: record.asteroidsDodged, survival: record.survivalTime, fuelCells: record.fuelCells, coins: record.coins, shields: record.shieldsUsed, boosts: record.boostsUsed };
     const challenges = daily.challenges.map((challenge) => ({ ...challenge, value: challenge.value + dailyMetrics[challenge.metric] }));
-    const next: StoredProfile = { ...profile, records: [record, ...profile.records].slice(0, 30), missions, daily: { ...daily, challenges }, totalCoins: profile.totalCoins + record.coins, totalCrystals: profile.totalCrystals + record.crystals, diamonds: profile.diamonds + record.crystals, totalGames: profile.totalGames + 1, totalShieldsUsed: profile.totalShieldsUsed + record.shieldsUsed, totalAsteroidsDodged: profile.totalAsteroidsDodged + record.asteroidsDodged, longestSurvival: Math.max(profile.longestSurvival, record.survivalTime), totalDistance: profile.totalDistance + record.distance };
+    const next: StoredProfile = { ...currentProfile, records: [record, ...currentProfile.records].slice(0, 30), missions, daily: { ...daily, challenges }, totalCoins: currentProfile.totalCoins + record.coins, totalCrystals: currentProfile.totalCrystals + record.crystals, diamonds: currentProfile.diamonds + record.crystals, totalGames: currentProfile.totalGames + 1, totalShieldsUsed: currentProfile.totalShieldsUsed + record.shieldsUsed, totalAsteroidsDodged: currentProfile.totalAsteroidsDodged + record.asteroidsDodged, longestSurvival: Math.max(currentProfile.longestSurvival, record.survivalTime), totalDistance: currentProfile.totalDistance + record.distance };
     await this.save(next); return next;
   },
 };

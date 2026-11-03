@@ -3,7 +3,7 @@ export type Sensitivity = 'low' | 'medium' | 'high';
 export type GameMode = 'endless' | 'mission' | 'adventure';
 export type ScreenName =
   | 'splash' | 'main' | 'mode' | 'tutorial' | 'game' | 'missions' | 'leaderboard' | 'settings'
-  | 'gameover' | 'garage' | 'upgrades' | 'shop' | 'inventory' | 'stages' | 'daily';
+  | 'gameover' | 'stageclear' | 'garage' | 'upgrades' | 'shop' | 'inventory' | 'stages' | 'daily';
 
 export type ItemKind = 'fuel' | 'crystal' | 'coin' | 'repair' | 'shield' | 'boost' | 'magnet';
 export type ObstacleKind = 'small' | 'giant' | 'meteor' | 'debris';
@@ -36,7 +36,7 @@ export interface GameSnapshot {
 export interface GameResult {
   score: number; distance: number; crystals: number; coins: number; fuelCells: number; asteroidsDodged: number;
   shieldsUsed: number; boostsUsed: number; survivalTime: number; remainingHp: number; maxHp: number; mode: GameMode; missionId?: string; stageId?: string;
-  missionCompleted?: boolean; stageCompleted?: boolean; revivesUsed: number; endedBy: 'hp' | 'fuel' | 'mission' | 'stage';
+  missionCompleted?: boolean; stageCompleted?: boolean; stageFirstClearReward?: number; revivesUsed: number; endedBy: 'hp' | 'fuel' | 'mission' | 'stage';
 }
 
 export interface Settings {
@@ -56,6 +56,8 @@ export interface StoredProfile {
   schemaVersion: number;
   settings: Settings;
   records: GameRecord[];
+  /** Local Monday date for the current weekly mission cycle. */
+  missionsWeek: string;
   missions: MissionProgress[];
   totalCoins: number;
   /** Lifetime crystal count, retained for backward compatibility and stats. */
