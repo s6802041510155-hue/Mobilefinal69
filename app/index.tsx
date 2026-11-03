@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { COLORS, MISSION_DEFINITIONS } from '@/game/config/game';
+import { COLORS, CONSUMABLE_DEFINITIONS, getModifiers, MISSION_DEFINITIONS, ROCKET_DEFINITIONS, stageFor, STAGES, UPGRADE_DEFINITIONS } from '@/game/config/game';
 import { NeonButton } from '@/components/NeonButton';
 import { NeonPanel } from '@/components/NeonPanel';
 import { SpaceBackdrop } from '@/components/SpaceBackdrop';
@@ -10,9 +10,9 @@ import { useTiltControl } from '@/hooks/useTiltControl';
 import { GameStorage } from '@/storage/GameStorage';
 import { feedback } from '@/services/feedback';
 import { rocketAudio } from '@/services/audio';
-import type { GameMode, GameRecord, GameResult, ScreenName, Settings, StoredProfile } from '@/types/game';
+import type { ConsumableId, GameMode, GameRecord, GameResult, RocketId, ScreenName, Settings, StoredProfile, UpgradeId } from '@/types/game';
 
-type Session = { id: number; mode: GameMode; missionId?: string; fallbackTouch: boolean };
+type Session = { id: number; mode: GameMode; missionId?: string; stageId?: string; fallbackTouch: boolean };
 
 export default function RocketRushApp() {
   const [profile, setProfile] = useState<StoredProfile | null>(null);
@@ -20,8 +20,8 @@ export default function RocketRushApp() {
   const [session, setSession] = useState<Session | null>(null);
   const [lastResult, setLastResult] = useState<GameRecord | null>(null);
   const settings = profile?.settings;
-  const { getTilt, calibrate, sensorAvailable } = useTiltControl(Boolean(settings), settings ?? {
-    soundEffects: true, backgroundMusic: true, vibration: true, sensitivity: 'medium', invertTilt: false, controlMode: 'tilt', calibration: 0,
+  const { getTilt, consumeDodge, calibrate, sensorAvailable } = useTiltControl(Boolean(settings), settings ?? {
+    soundEffects: true, backgroundMusic: true, vibration: true, sensitivity: 'medium', invertTilt: false, controlMode: 'tilt', calibration: 0, gyroDodge: true, reducedEffects: false,
   });
 
   useEffect(() => {
@@ -34,8 +34,10 @@ export default function RocketRushApp() {
   }, []);
 
   useEffect(() => {
-    if (settings) rocketAudio.setMusicEnabled(settings.backgroundMusic);
-  }, [settings?.backgroundMusic]);
+    // Music only runs during an active flight; game-specific pause/death states
+    // refine this further inside GameScreen.
+    if (settings) rocketAudio.setMusicEnabled(settings.backgroundMusic && screen === 'game');
+  }, [screen, settings?.backgroundMusic]);
 
   const navigate = (next: ScreenName) => {
     if (settings) feedback.tap(settings);
@@ -46,36 +48,47 @@ export default function RocketRushApp() {
     const saved = await GameStorage.updateSettings(profile, next);
     setProfile(saved);
   };
-  const startGame = (mode: GameMode, missionId?: string) => {
+  const startGame = (mode: GameMode, missionId?: string, stageId?: string) => {
     if (!profile) return;
     feedback.tap(profile.settings);
-    setSession({ id: Date.now(), mode, missionId, fallbackTouch: profile.settings.controlMode === 'tilt' && !sensorAvailable });
+    setSession({ id: Date.now(), mode, missionId, stageId, fallbackTouch: profile.settings.controlMode === 'tilt' && !sensorAvailable });
     setScreen('game');
   };
   const finishGame = async (result: GameResult) => {
     if (!profile) return;
     const record = GameStorage.createRecord(result);
-    const saved = await GameStorage.recordGame(profile, record);
+    let saved = await GameStorage.recordGame(profile, record);
+    if (result.stageCompleted && result.stageId) saved = await GameStorage.completeStage(saved, result.stageId, result.remainingHp, result.maxHp, result.revivesUsed);
     setProfile(saved);
     setLastResult(record);
     setScreen('gameover');
   };
   const activeSettings = useMemo(() => session?.fallbackTouch && settings ? { ...settings, controlMode: 'touch' as const } : settings, [session?.fallbackTouch, settings]);
+  const modifiers = useMemo(() => profile ? getModifiers(profile.equippedRocket, profile.upgrades) : null, [profile]);
+  const spendDiamonds = async (amount: number) => { if (!profile) return false; const saved = await GameStorage.spendDiamonds(profile, amount); if (!saved) return false; setProfile(saved); return true; };
+  const consume = async (item: ConsumableId) => { if (!profile) return; const saved = await GameStorage.consume(profile, item); if (saved) setProfile(saved); };
 
   if (!profile || !settings) return <SplashScreen />;
-  if (screen === 'game' && session && activeSettings) return (
-    <GameScreen key={session.id} mode={session.mode} missionId={session.missionId} settings={activeSettings} getTilt={getTilt}
+  if (screen === 'game' && session && activeSettings && modifiers) return (
+    <GameScreen key={session.id} mode={session.mode} missionId={session.missionId} stageId={session.stageId} settings={activeSettings} modifiers={modifiers} loadout={profile.loadout} diamondBalance={profile.diamonds} getTilt={getTilt} consumeDodge={consumeDodge}
       onFinished={finishGame} onExit={() => navigate('main')}
       onSettingsChange={updateSettings} onCalibrate={() => updateSettings({ ...settings, calibration: calibrate() })}
+      onSpendDiamonds={spendDiamonds} onConsume={consume}
       onFeedback={(event) => event === 'collect' ? feedback.collect(settings) : event === 'hit' ? feedback.hit(settings) : feedback.warning(settings)} />
   );
   if (screen === 'main') return <MainMenu profile={profile} onNavigate={navigate} />;
-  if (screen === 'mode') return <ModeScreen onBack={() => navigate('main')} onStart={startGame} />;
+  if (screen === 'mode') return <ModeScreen onBack={() => navigate('main')} onStart={startGame} onStages={() => navigate('stages')} />;
   if (screen === 'tutorial') return <TutorialScreen onBack={() => navigate('main')} onStart={() => startGame('endless')} />;
   if (screen === 'missions') return <MissionsScreen profile={profile} onBack={() => navigate('main')} onStart={(id) => startGame('mission', id)} onClaim={async (id, reward) => setProfile(await GameStorage.claimMission(profile, id, reward))} />;
   if (screen === 'leaderboard') return <LeaderboardScreen profile={profile} onBack={() => navigate('main')} />;
+  if (screen === 'garage') return <GarageScreen profile={profile} onBack={() => navigate('main')} onRefresh={setProfile} onOpen={navigate} />;
+  if (screen === 'upgrades') return <UpgradesScreen profile={profile} onBack={() => navigate('garage')} onRefresh={setProfile} />;
+  if (screen === 'shop') return <ShopScreen profile={profile} onBack={() => navigate('garage')} onRefresh={setProfile} />;
+  if (screen === 'inventory') return <InventoryScreen profile={profile} onBack={() => navigate('garage')} onRefresh={setProfile} />;
+  if (screen === 'stages') return <StagesScreen profile={profile} onBack={() => navigate('mode')} onStart={(id) => startGame('adventure', undefined, id)} />;
+  if (screen === 'daily') return <DailyScreen profile={profile} onBack={() => navigate('main')} onRefresh={setProfile} />;
   if (screen === 'settings') return <SettingsScreen settings={settings} sensorAvailable={sensorAvailable} onBack={() => navigate('main')} onChange={updateSettings} onCalibrate={() => updateSettings({ ...settings, calibration: calibrate() })} />;
-  if (screen === 'gameover' && lastResult) return <GameOverScreen result={lastResult} records={profile.records} onPlayAgain={() => startGame(lastResult.mode, lastResult.missionId)} onMenu={() => navigate('main')} />;
+  if (screen === 'gameover' && lastResult) return <GameOverScreen result={lastResult} records={profile.records} onPlayAgain={() => startGame(lastResult.mode, lastResult.missionId, lastResult.stageId)} onMenu={() => navigate('main')} />;
   return <MainMenu profile={profile} onNavigate={navigate} />;
 }
 
@@ -97,12 +110,14 @@ function MainMenu({ profile, onNavigate }: { profile: StoredProfile; onNavigate:
     <View style={styles.hero}><Text style={styles.planet}>🪐</Text><Text style={styles.heroRocket}>🚀</Text><Text style={styles.spark}>✦</Text></View>
     <View style={styles.menuButtons}>
       <NeonButton label="PLAY" icon="▶" variant="primary" onPress={() => onNavigate('mode')} style={styles.playButton} />
+      <NeonButton label="ROCKET GARAGE" icon="🚀" onPress={() => onNavigate('garage')} />
+      <NeonButton label="DAILY CHALLENGES" icon="☀" onPress={() => onNavigate('daily')} />
       <NeonButton label="MISSIONS" icon="◎" onPress={() => onNavigate('missions')} />
       <NeonButton label="LEADERBOARD" icon="♛" onPress={() => onNavigate('leaderboard')} />
       <NeonButton label="SETTINGS" icon="⚙" onPress={() => onNavigate('settings')} />
       <NeonButton label="HOW TO PLAY" icon="?" onPress={() => onNavigate('tutorial')} />
     </View>
-    <Text style={styles.coinBank}>🟡 {profile.totalCoins} COINS  ·  {profile.totalGames} FLIGHTS</Text>
+    <Text style={styles.coinBank}>🟡 {profile.totalCoins} COINS  ·  💎 {profile.diamonds} DIAMONDS</Text>
   </View></SafeAreaView></SpaceBackdrop>;
 }
 
@@ -110,12 +125,12 @@ function ScreenShell({ title, onBack, children }: { title: string; onBack: () =>
   return <SpaceBackdrop><SafeAreaView style={styles.safe}><View style={styles.header}><Pressable onPress={onBack} style={styles.back}><Text style={styles.backText}>‹</Text></Pressable><Text style={styles.headerTitle}>{title}</Text><View style={styles.headerSpacer} /></View><ScrollView contentContainerStyle={styles.scroll}>{children}</ScrollView></SafeAreaView></SpaceBackdrop>;
 }
 
-function ModeScreen({ onBack, onStart }: { onBack: () => void; onStart: (mode: GameMode, missionId?: string) => void }) {
+function ModeScreen({ onBack, onStart, onStages }: { onBack: () => void; onStart: (mode: GameMode, missionId?: string) => void; onStages: () => void }) {
   return <ScreenShell title="SELECT MODE" onBack={onBack}>
     <Text style={styles.screenIntro}>CHOOSE YOUR FLIGHT</Text>
     <Pressable onPress={() => onStart('endless')}><NeonPanel style={[styles.modeCard, styles.endlessCard]}><Text style={styles.modeIcon}>∞</Text><View><Text style={styles.modeTitle}>ENDLESS SURVIVAL</Text><Text style={styles.modeDescription}>Go as far as you can. Every meter makes space more dangerous.</Text></View></NeonPanel></Pressable>
-    <Pressable onPress={() => onStart('mission', 'travel-3000')}><NeonPanel style={styles.modeCard}><Text style={styles.modeIcon}>⚑</Text><View><Text style={styles.modeTitle}>MISSION CHALLENGE</Text><Text style={styles.modeDescription}>Choose missions, earn coin rewards, and become a master pilot.</Text></View></NeonPanel></Pressable>
-    <Text style={styles.helpNote}>TIP: You can choose a specific mission on the Missions screen.</Text>
+    <Pressable onPress={onStages}><NeonPanel style={styles.modeCard}><Text style={styles.modeIcon}>⚑</Text><View><Text style={styles.modeTitle}>ADVENTURE MODE</Text><Text style={styles.modeDescription}>Clear six stages, earn first-clear rewards, and unlock Nebula Guardian.</Text></View></NeonPanel></Pressable>
+    <Text style={styles.helpNote}>MISSIONS remain available from the main menu for long-term goals.</Text>
   </ScreenShell>;
 }
 
@@ -139,18 +154,38 @@ function MissionsScreen({ profile, onBack, onStart, onClaim }: { profile: Stored
   })}</ScreenShell>;
 }
 
+function Wallet({ profile }: { profile: StoredProfile }) { return <Text style={styles.wallet}>🟡 {profile.totalCoins}  ·  💎 {profile.diamonds}</Text>; }
+
+function GarageScreen({ profile, onBack, onRefresh, onOpen }: { profile: StoredProfile; onBack: () => void; onRefresh: (profile: StoredProfile) => void; onOpen: (screen: ScreenName) => void }) {
+  const buy = async (id: RocketId) => { const rocket = ROCKET_DEFINITIONS[id]; Alert.alert('Purchase rocket?', `${rocket.name}\n${rocket.price} Coins`, [{ text: 'Cancel', style: 'cancel' }, { text: 'BUY', onPress: async () => { const saved = await GameStorage.purchaseRocket(profile, id); if (saved) { onRefresh(saved); Alert.alert('Rocket unlocked!', `${rocket.name} is ready to equip.`); } else Alert.alert('Not enough Coins', 'Complete flights and challenges to earn more Coins.'); } }]); };
+  const equip = async (id: RocketId) => { const saved = await GameStorage.equipRocket(profile, id); if (saved) onRefresh(saved); };
+  return <ScreenShell title="ROCKET GARAGE" onBack={onBack}><Wallet profile={profile} /><View style={styles.garageLinks}><NeonButton small label="UPGRADES" onPress={() => onOpen('upgrades')} /><NeonButton small label="ITEM SHOP" onPress={() => onOpen('shop')} /><NeonButton small label="INVENTORY" onPress={() => onOpen('inventory')} /></View>{(Object.keys(ROCKET_DEFINITIONS) as RocketId[]).map((id) => { const rocket = ROCKET_DEFINITIONS[id]; const owned = profile.ownedRockets.includes(id); const equipped = profile.equippedRocket === id; const locked = rocket.unlockStage && !profile.stages.find((stage) => stage.stageId === rocket.unlockStage)?.cleared; return <NeonPanel key={id} style={styles.garageCard}><Text style={[styles.garageRocket, { color: rocket.tint }]}>{rocket.emoji}</Text><View style={styles.garageInfo}><Text style={styles.missionTitle}>{rocket.name}</Text><Text style={styles.ability}>{rocket.ability}</Text><Text style={styles.missionDescription}>{rocket.description}</Text>{locked ? <Text style={styles.locked}>LOCKED — CLEAR STAGE 6</Text> : equipped ? <Text style={styles.claimed}>✓ EQUIPPED</Text> : owned ? <NeonButton small label="EQUIP" variant="primary" onPress={() => equip(id)} /> : <NeonButton small label={`BUY — 🟡 ${rocket.price}`} variant="gold" onPress={() => buy(id)} />}</View></NeonPanel>; })}</ScreenShell>;
+}
+
+function UpgradesScreen({ profile, onBack, onRefresh }: { profile: StoredProfile; onBack: () => void; onRefresh: (profile: StoredProfile) => void }) { return <ScreenShell title="PERMANENT UPGRADES" onBack={onBack}><Wallet profile={profile} />{(Object.keys(UPGRADE_DEFINITIONS) as UpgradeId[]).map((id) => { const upgrade = UPGRADE_DEFINITIONS[id]; const level = profile.upgrades[id]; const price = upgrade.prices[level]; return <NeonPanel key={id} style={styles.upgradeCard}><Text style={styles.missionIcon}>{upgrade.icon}</Text><View style={styles.missionCopy}><Text style={styles.missionTitle}>{upgrade.name} · LV {level}/2</Text><Text style={styles.missionDescription}>{upgrade.description}</Text><Text style={styles.ability}>{level < 2 ? `NEXT: ${upgrade.values[level]}` : 'MAX LEVEL'}</Text></View>{level < 2 ? <NeonButton small label={`🟡 ${price}`} variant="gold" onPress={async () => { const saved = await GameStorage.buyUpgrade(profile, id); if (saved) onRefresh(saved); else Alert.alert('Not enough Coins'); }} /> : null}</NeonPanel>; })}</ScreenShell>; }
+
+function ShopScreen({ profile, onBack, onRefresh }: { profile: StoredProfile; onBack: () => void; onRefresh: (profile: StoredProfile) => void }) { return <ScreenShell title="ITEM SHOP" onBack={onBack}><Wallet profile={profile} />{(Object.keys(CONSUMABLE_DEFINITIONS) as ConsumableId[]).map((id) => { const item = CONSUMABLE_DEFINITIONS[id]; return <NeonPanel key={id} style={styles.upgradeCard}><Text style={styles.missionIcon}>{item.icon}</Text><View style={styles.missionCopy}><Text style={styles.missionTitle}>{item.name}</Text><Text style={styles.missionDescription}>{item.description}</Text><Text style={styles.ability}>OWNED: {profile.inventory[id]}</Text></View><NeonButton small label={`BUY ${item.price}`} variant="gold" onPress={async () => { const saved = await GameStorage.buyConsumable(profile, id); if (saved) onRefresh(saved); else Alert.alert('Not enough Coins'); }} /></NeonPanel>; })}</ScreenShell>; }
+
+function InventoryScreen({ profile, onBack, onRefresh }: { profile: StoredProfile; onBack: () => void; onRefresh: (profile: StoredProfile) => void }) { const toggle = async (id: ConsumableId) => { const active = profile.loadout.includes(id); const next = active ? profile.loadout.filter((item) => item !== id) : [...profile.loadout, id]; if (!active && profile.loadout.length >= 3) { Alert.alert('Loadout full', 'Choose up to 3 different items per flight.'); return; } const saved = await GameStorage.setLoadout(profile, next); onRefresh(saved); }; return <ScreenShell title="INVENTORY" onBack={onBack}><Text style={styles.screenIntro}>EQUIP UP TO 3 ITEMS BEFORE A FLIGHT</Text>{(Object.keys(CONSUMABLE_DEFINITIONS) as ConsumableId[]).map((id) => <NeonPanel key={id} style={styles.upgradeCard}><Text style={styles.missionIcon}>{CONSUMABLE_DEFINITIONS[id].icon}</Text><View style={styles.missionCopy}><Text style={styles.missionTitle}>{CONSUMABLE_DEFINITIONS[id].name}</Text><Text style={styles.ability}>OWNED: {profile.inventory[id]}</Text></View><NeonButton small disabled={profile.inventory[id] === 0} label={profile.loadout.includes(id) ? 'EQUIPPED' : 'EQUIP'} variant={profile.loadout.includes(id) ? 'primary' : 'secondary'} onPress={() => toggle(id)} /></NeonPanel>)}</ScreenShell>; }
+
+function StagesScreen({ profile, onBack, onStart }: { profile: StoredProfile; onBack: () => void; onStart: (id: string) => void }) { return <ScreenShell title="ADVENTURE STAGES" onBack={onBack}>{STAGES.map((stage) => { const progress = profile.stages.find((item) => item.stageId === stage.id); const locked = !progress?.unlocked; return <NeonPanel key={stage.id} style={styles.stageCard}><Text style={styles.stageNumber}>{locked ? '🔒' : `0${stage.number}`}</Text><View style={styles.missionCopy}><Text style={styles.missionTitle}>{stage.name}</Text><Text style={styles.missionDescription}>{stage.objective}</Text><Text style={styles.ability}>REWARD: 🟡 {stage.reward} · {'★'.repeat(progress?.bestStars ?? 0)}{'☆'.repeat(3 - (progress?.bestStars ?? 0))}</Text></View><NeonButton small disabled={locked} label={locked ? 'LOCKED' : progress?.cleared ? 'REPLAY' : 'PLAY'} variant="primary" onPress={() => onStart(stage.id)} /></NeonPanel>; })}</ScreenShell>; }
+
+function DailyScreen({ profile, onBack, onRefresh }: { profile: StoredProfile; onBack: () => void; onRefresh: (profile: StoredProfile) => void }) { const daily = profile.daily; return <ScreenShell title="DAILY CHALLENGES" onBack={onBack}><Wallet profile={profile} /><Text style={styles.screenIntro}>RESETS WITH YOUR LOCAL DATE</Text>{daily?.challenges.map((challenge) => { const complete = challenge.value >= challenge.target; return <NeonPanel key={challenge.id} style={styles.missionCard}><View style={styles.missionTop}><Text style={styles.missionIcon}>{challenge.icon}</Text><View style={styles.missionCopy}><Text style={styles.missionTitle}>{challenge.title}</Text><Text style={styles.missionDescription}>{challenge.target} {challenge.metric}</Text></View><Text style={styles.reward}>🟡 {challenge.reward}</Text></View><View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${Math.min(100, challenge.value / challenge.target * 100)}%` }]} /></View><View style={styles.missionFooter}><Text style={styles.progressText}>{Math.min(Math.floor(challenge.value), challenge.target)} / {challenge.target}</Text>{challenge.claimed ? <Text style={styles.claimed}>✓ CLAIMED</Text> : <NeonButton small disabled={!complete} label="CLAIM" variant="gold" onPress={async () => { const saved = await GameStorage.claimDaily(profile, challenge.id); if (saved) onRefresh(saved); }} />}</View></NeonPanel>; })}</ScreenShell>; }
+
 function LeaderboardScreen({ profile, onBack }: { profile: StoredProfile; onBack: () => void }) {
   const rows = [...profile.records].sort((a, b) => b.score - a.score).slice(0, 10);
   return <ScreenShell title="LOCAL LEADERBOARD" onBack={onBack}><Text style={styles.screenIntro}>SCORES SAVED ON THIS DEVICE</Text><NeonPanel style={styles.leaderPanel}>{rows.length === 0 ? <View style={styles.emptyBoard}><Text style={styles.emptyIcon}>🏆</Text><Text style={styles.emptyTitle}>NO FLIGHTS YET</Text><Text style={styles.emptyText}>Finish a run to add your first local score.</Text></View> : rows.map((record, index) => <View key={record.id} style={[styles.leaderRow, index < 3 && styles.topRow]}><Text style={styles.rank}>{index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${index + 1}`}</Text><View style={styles.leaderDetail}><Text style={styles.leaderName}>FLIGHT {record.playedAt.slice(0, 10)}</Text><Text style={styles.leaderDistance}>{record.distance} m</Text></View><Text style={styles.leaderScore}>{record.score.toLocaleString()}</Text></View>)}</NeonPanel><Text style={styles.localOnly}>Local only — global rankings can be connected later without changing the game data model.</Text></ScreenShell>;
 }
 
 function SettingsScreen({ settings, sensorAvailable, onBack, onChange, onCalibrate }: { settings: Settings; sensorAvailable: boolean; onBack: () => void; onChange: (settings: Settings) => void; onCalibrate: () => void }) {
-  const toggle = (key: 'soundEffects' | 'backgroundMusic' | 'vibration' | 'invertTilt') => onChange({ ...settings, [key]: !settings[key] });
+  const toggle = (key: 'soundEffects' | 'backgroundMusic' | 'vibration' | 'invertTilt' | 'gyroDodge' | 'reducedEffects') => onChange({ ...settings, [key]: !settings[key] });
   return <ScreenShell title="SETTINGS" onBack={onBack}><NeonPanel style={styles.settingsPanel}>
     <SettingToggle label="Sound Effects" value={settings.soundEffects} onChange={() => toggle('soundEffects')} />
     <SettingToggle label="Background Music" value={settings.backgroundMusic} onChange={() => toggle('backgroundMusic')} />
     <SettingToggle label="Vibration" value={settings.vibration} onChange={() => toggle('vibration')} />
     <SettingToggle label="Invert Tilt" value={settings.invertTilt} onChange={() => toggle('invertTilt')} />
+    <SettingToggle label="Gyro Dodge" value={settings.gyroDodge} onChange={() => toggle('gyroDodge')} />
+    <SettingToggle label="Reduced Effects" value={settings.reducedEffects} onChange={() => toggle('reducedEffects')} />
     <Text style={styles.settingLabel}>TILT SENSITIVITY</Text><View style={styles.choiceRow}>{(['low', 'medium', 'high'] as const).map((value) => <Pressable key={value} onPress={() => onChange({ ...settings, sensitivity: value })} style={[styles.choice, settings.sensitivity === value && styles.choiceActive]}><Text style={styles.choiceText}>{value.toUpperCase()}</Text></Pressable>)}</View>
     <Text style={styles.settingLabel}>CONTROL MODE</Text><View style={styles.choiceRow}>{(['tilt', 'touch'] as const).map((value) => <Pressable key={value} onPress={() => onChange({ ...settings, controlMode: value })} style={[styles.choice, settings.controlMode === value && styles.choiceActive]}><Text style={styles.choiceText}>{value === 'tilt' ? 'TILT' : 'TOUCH'}</Text></Pressable>)}</View>
     <View style={styles.sensorStatus}><Text style={styles.sensorText}>{sensorAvailable ? '● Motion sensor detected' : '● Motion sensor unavailable — Touch mode will be used'}</Text></View>
@@ -163,7 +198,10 @@ function SettingToggle({ label, value, onChange }: { label: string; value: boole
 function GameOverScreen({ result, records, onPlayAgain, onMenu }: { result: GameRecord; records: GameRecord[]; onPlayAgain: () => void; onMenu: () => void }) {
   const previousBest = Math.max(0, ...records.filter((record) => record.id !== result.id).map((record) => record.score));
   const highScore = result.score > previousBest;
-  return <SpaceBackdrop><SafeAreaView style={styles.gameOverSafe}><Text style={styles.overTitle}>{result.missionCompleted ? 'MISSION\nCOMPLETE!' : 'GAME\nOVER'}</Text>{highScore ? <Text style={styles.newHigh}>★ NEW HIGH SCORE ★</Text> : null}<NeonPanel style={styles.resultPanel}><ResultLine label="DISTANCE" value={`${result.distance} m`} /><ResultLine label="SCORE" value={result.score.toLocaleString()} /><ResultLine label="CRYSTALS" value={`💎 ${result.crystals}`} /><ResultLine label="ASTEROIDS DODGED" value={String(result.asteroidsDodged)} /><ResultLine label="SURVIVAL" value={`${result.survivalTime}s`} /><View style={styles.endReason}><Text style={styles.endReasonText}>{result.endedBy === 'fuel' ? 'Out of fuel' : result.endedBy === 'mission' ? 'Mission objective reached' : 'Hull integrity depleted'}</Text></View></NeonPanel><View style={styles.gameOverButtons}><NeonButton label="PLAY AGAIN" icon="↻" variant="primary" onPress={onPlayAgain} /><NeonButton label="MAIN MENU" icon="⌂" onPress={onMenu} /></View></SafeAreaView></SpaceBackdrop>;
+  const clearedStage = result.stageCompleted ? stageFor(result.stageId) : undefined;
+  const title = clearedStage ? 'STAGE\nCLEAR!' : result.missionCompleted ? 'MISSION\nCOMPLETE!' : 'GAME\nOVER';
+  const endMessage = clearedStage ? `${clearedStage.name} cleared${result.revivesUsed ? ' · star rating capped at ★★' : ''}` : result.endedBy === 'fuel' ? 'Out of fuel' : result.endedBy === 'mission' ? 'Mission objective reached' : 'Hull integrity depleted';
+  return <SpaceBackdrop theme={clearedStage?.theme}><SafeAreaView style={styles.gameOverSafe}><Text style={styles.overTitle}>{title}</Text>{clearedStage ? <Text style={styles.newHigh}>★ FIRST-CLEAR REWARD: 🟡 {clearedStage.reward} ★</Text> : highScore ? <Text style={styles.newHigh}>★ NEW HIGH SCORE ★</Text> : null}<NeonPanel style={styles.resultPanel}><ResultLine label="DISTANCE" value={`${result.distance} m`} /><ResultLine label="SCORE" value={result.score.toLocaleString()} /><ResultLine label="CRYSTALS" value={`💎 ${result.crystals}`} /><ResultLine label="ASTEROIDS DODGED" value={String(result.asteroidsDodged)} /><ResultLine label="SURVIVAL" value={`${result.survivalTime}s`} /><View style={styles.endReason}><Text style={styles.endReasonText}>{endMessage}</Text></View></NeonPanel><View style={styles.gameOverButtons}><NeonButton label="PLAY AGAIN" icon="↻" variant="primary" onPress={onPlayAgain} /><NeonButton label="MAIN MENU" icon="⌂" onPress={onMenu} /></View></SafeAreaView></SpaceBackdrop>;
 }
 
 function ResultLine({ label, value }: { label: string; value: string }) { return <View style={styles.resultLine}><Text style={styles.resultLabel}>{label}</Text><Text style={styles.resultValue}>{value}</Text></View>; }
@@ -175,6 +213,7 @@ const styles = StyleSheet.create({
   modeCard: { minHeight: 151, flexDirection: 'row', alignItems: 'center', gap: 16 }, endlessCard: { borderColor: COLORS.yellow }, modeIcon: { color: COLORS.cyan, fontSize: 48, fontWeight: '900' }, modeTitle: { color: '#fff', fontSize: 21, fontWeight: '900', marginBottom: 6 }, modeDescription: { color: '#c8d5ff', fontSize: 13, lineHeight: 19, flexShrink: 1 }, helpNote: { color: '#a4b9ee', textAlign: 'center', fontSize: 12, marginTop: 3 },
   tutorialPanel: { alignItems: 'center', paddingVertical: 28, minHeight: 327 }, tutorialIcon: { fontSize: 76, marginBottom: 8 }, tutorialTitle: { color: COLORS.cyan, fontWeight: '900', fontSize: 24, letterSpacing: 1 }, tutorialBody: { color: '#e4eaff', lineHeight: 21, fontSize: 15, textAlign: 'center', marginTop: 16 }, dots: { flexDirection: 'row', gap: 8, marginVertical: 22 }, dot: { width: 8, height: 8, borderRadius: 6, backgroundColor: '#6b77b9' }, dotActive: { backgroundColor: COLORS.cyan, width: 23 }, rowButtons: { width: '100%', flexDirection: 'row', justifyContent: 'space-between' }, legendPanel: { gap: 8 }, legend: { flexDirection: 'row', gap: 13, alignItems: 'center' }, legendIcon: { fontSize: 24 }, legendText: { color: '#e6edff', fontSize: 13, flexShrink: 1 },
   missionCard: { gap: 13 }, missionTop: { flexDirection: 'row', alignItems: 'center', gap: 10 }, missionIcon: { fontSize: 34 }, missionCopy: { flex: 1 }, missionTitle: { color: '#fff', fontWeight: '900', fontSize: 16 }, missionDescription: { color: '#bcc9fa', fontSize: 12, marginTop: 2 }, reward: { color: COLORS.yellow, fontWeight: '900', fontSize: 12 }, progressTrack: { height: 10, backgroundColor: '#081442', borderRadius: 9, overflow: 'hidden', borderWidth: 1, borderColor: '#3656aa' }, progressFill: { height: '100%', backgroundColor: COLORS.cyan, borderRadius: 9 }, missionFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, progressText: { color: '#d9e4ff', fontSize: 12, fontWeight: '800' }, claimed: { color: '#6fffc8', fontSize: 12, fontWeight: '900' },
+  wallet: { color: COLORS.yellow, fontSize: 14, textAlign: 'center', fontWeight: '900', letterSpacing: 1 }, garageLinks: { flexDirection: 'row', gap: 7, justifyContent: 'center', flexWrap: 'wrap' }, garageCard: { flexDirection: 'row', alignItems: 'center', gap: 12 }, garageRocket: { fontSize: 48, textShadowColor: COLORS.cyan, textShadowRadius: 10 }, garageInfo: { flex: 1, gap: 5 }, ability: { color: COLORS.cyan, fontSize: 11, fontWeight: '900', letterSpacing: 0.5 }, locked: { color: '#f098bf', fontSize: 11, fontWeight: '900' }, upgradeCard: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 12 }, stageCard: { flexDirection: 'row', alignItems: 'center', gap: 12 }, stageNumber: { color: COLORS.cyan, fontSize: 26, fontWeight: '900', width: 42, textAlign: 'center' },
   leaderPanel: { padding: 9 }, emptyBoard: { alignItems: 'center', paddingVertical: 36, gap: 7 }, emptyIcon: { fontSize: 50 }, emptyTitle: { color: '#fff', fontWeight: '900', fontSize: 18 }, emptyText: { color: '#bac8f5', textAlign: 'center', fontSize: 13 }, leaderRow: { minHeight: 52, paddingHorizontal: 7, flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderColor: 'rgba(111, 137, 220, 0.28)' }, topRow: { backgroundColor: 'rgba(110, 63, 224, 0.18)' }, rank: { width: 44, color: '#f4f7ff', fontWeight: '900', fontSize: 16 }, leaderDetail: { flex: 1 }, leaderName: { color: '#f6f7ff', fontWeight: '800', fontSize: 12 }, leaderDistance: { color: '#afbef5', fontSize: 11, marginTop: 2 }, leaderScore: { color: COLORS.yellow, fontWeight: '900', fontSize: 17 }, localOnly: { color: '#b4c2f4', fontSize: 11, lineHeight: 16, textAlign: 'center' },
   settingsPanel: { gap: 9 }, toggleRow: { height: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: 'rgba(123, 148, 230, 0.2)' }, toggleLabel: { color: '#fff', fontSize: 15, fontWeight: '700' }, settingLabel: { color: COLORS.cyan, fontSize: 11, fontWeight: '900', letterSpacing: 1.2, marginTop: 10 }, choiceRow: { flexDirection: 'row', gap: 8 }, choice: { flex: 1, minHeight: 39, borderRadius: 12, backgroundColor: '#172365', borderWidth: 1, borderColor: '#4162b7', alignItems: 'center', justifyContent: 'center' }, choiceActive: { backgroundColor: '#4132b8', borderColor: COLORS.cyan, shadowColor: COLORS.cyan, shadowOpacity: 0.8, shadowRadius: 7 }, choiceText: { color: '#fff', fontSize: 11, fontWeight: '900' }, sensorStatus: { marginVertical: 6, padding: 10, backgroundColor: 'rgba(0, 212, 255, 0.1)', borderRadius: 12 }, sensorText: { color: '#8df6ff', fontSize: 12, textAlign: 'center', fontWeight: '700' },
   gameOverSafe: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 17 }, overTitle: { color: '#fa9eff', fontSize: 47, lineHeight: 43, fontWeight: '900', fontStyle: 'italic', textAlign: 'center', textShadowColor: COLORS.pink, textShadowRadius: 18 }, newHigh: { color: COLORS.yellow, fontSize: 13, fontWeight: '900', letterSpacing: 1.5 }, resultPanel: { width: '100%', maxWidth: 350, gap: 7, paddingVertical: 20 }, resultLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', paddingHorizontal: 5 }, resultLabel: { color: '#bdc9ff', fontSize: 11, fontWeight: '900', letterSpacing: 1 }, resultValue: { color: '#fff', fontSize: 22, fontWeight: '900' }, endReason: { marginTop: 7, backgroundColor: 'rgba(90, 55, 173, 0.45)', padding: 10, borderRadius: 10 }, endReasonText: { color: '#d3dcff', fontSize: 12, textAlign: 'center' }, gameOverButtons: { width: '100%', maxWidth: 350, gap: 10 },

@@ -2,7 +2,15 @@ import { useEffect, useMemo, useRef } from 'react';
 import { Animated, StyleSheet, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 
-export function SpaceBackdrop({ children }: { children: React.ReactNode }) {
+const palettes: Record<string, [string, string, string, string]> = {
+  earth: ['#020b2e', '#0b3e75', '#0e789e', '#07164b'], crystal: ['#12042f', '#492078', '#9a3c91', '#170b54'],
+  mars: ['#25050b', '#6f1f1d', '#b74d21', '#23040b'], storm: ['#090329', '#251063', '#104b83', '#070622'],
+  portal: ['#061c46', '#0e6e9a', '#9b287f', '#17064a'], final: ['#190208', '#4b0713', '#210120', '#05010a'],
+  easy: ['#02061f', '#10155a', '#126d91', '#070a32'], normal: ['#090329', '#2b1769', '#67328e', '#10063f'],
+  hard: ['#25050b', '#742520', '#8d2355', '#140416'], extreme: ['#16051f', '#481043', '#811b40', '#0a0218'], survival: ['#090108', '#39030d', '#200022', '#010103'],
+};
+
+export function SpaceBackdrop({ children, theme = 'easy' }: { children: React.ReactNode; theme?: string }) {
   const pulse = useRef(new Animated.Value(0.45)).current;
   const stars = useMemo(() => Array.from({ length: 54 }, (_, index) => ({
     id: index,
@@ -19,7 +27,7 @@ export function SpaceBackdrop({ children }: { children: React.ReactNode }) {
     return () => animation.stop();
   }, [pulse]);
   return (
-    <LinearGradient colors={['#02061f', '#10155a', '#240c5d', '#070a32']} style={styles.fill}>
+    <LinearGradient colors={palettes[theme] ?? palettes.easy} style={styles.fill}>
       <View pointerEvents="none" style={styles.nebulaOne} />
       <Animated.View pointerEvents="none" style={[styles.nebulaTwo, { opacity: pulse }]} />
       {stars.map((star) => <View key={star.id} pointerEvents="none" style={[styles.star, {

@@ -12,6 +12,8 @@ export function useTiltControl(enabled: boolean, settings: Settings) {
   const tilt = useRef(0);
   const rawTilt = useRef(0);
   const lastSample = useRef(Date.now());
+  const dodgeDirection = useRef(0);
+  const lastDodgeAt = useRef(0);
   const [sensorAvailable, setSensorAvailable] = useState(false);
 
   useEffect(() => {
@@ -44,7 +46,15 @@ export function useTiltControl(enabled: boolean, settings: Settings) {
         // Smooth sensor noise before handing it to the game loop.
         tilt.current = tilt.current * 0.8 + rawTilt.current * 0.2;
       });
-      if (gyroOK) gyroSubscription = Gyroscope.addListener((sample) => { gyro.current = sample; });
+      if (gyroOK) gyroSubscription = Gyroscope.addListener((sample) => {
+        gyro.current = sample;
+        // A deliberate quick roll triggers one dodge signal. The game engine
+        // applies its own cooldown, so ordinary tilt control remains smooth.
+        if (Math.abs(sample.y) >= 1.8 && Date.now() - lastDodgeAt.current > 650) {
+          dodgeDirection.current = sample.y > 0 ? 1 : -1;
+          lastDodgeAt.current = Date.now();
+        }
+      });
     })();
     return () => {
       alive = false;
@@ -55,5 +65,10 @@ export function useTiltControl(enabled: boolean, settings: Settings) {
 
   const calibrate = useCallback(() => acceleration.current.x, []);
   const getTilt = useCallback(() => tilt.current, []);
-  return { getTilt, calibrate, sensorAvailable };
+  const consumeDodge = useCallback(() => {
+    const direction = dodgeDirection.current;
+    dodgeDirection.current = 0;
+    return direction;
+  }, []);
+  return { getTilt, consumeDodge, calibrate, sensorAvailable };
 }
